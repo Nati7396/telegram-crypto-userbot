@@ -31,9 +31,9 @@ from keep_alive import keep_alive
 # ─── Load environment variables from .env ────────────────────────────────────
 load_dotenv()
 
-API_ID      = int(os.environ["API_ID"])
-API_HASH    = os.environ["API_HASH"]
-PHONE       = os.environ["PHONE_NUMBER"]
+API_ID      = int(os.environ["TELEGRAM_API_ID"])
+API_HASH    = os.environ["TELEGRAM_API_HASH"]
+PHONE       = os.environ["TELEGRAM_PHONE"]
 
 # ─── Telethon session (saved to disk so login is only needed once) ────────────
 SESSION_NAME = "userbot_session"
