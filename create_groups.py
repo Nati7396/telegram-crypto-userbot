@@ -3,21 +3,25 @@ create_groups.py
 ────────────────
 Creates 100 Telegram supergroups:
   - Named by their own Telegram group ID
+  - Profile photo set
   - Chat history visible to new members
   - A welcome message sent in each
-  - Safe delays to avoid Telegram flood bans
+  - Longer safe delays to avoid flood bans
 """
 
 import asyncio
 import os
 import random
+import urllib.request
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.tl.functions.channels import (
     CreateChannelRequest,
     EditTitleRequest,
+    EditPhotoRequest,
     TogglePreHistoryHiddenRequest,
 )
+from telethon.tl.types import InputChatUploadedPhoto
 from telethon.errors import FloodWaitError, ChatNotModifiedError
 
 load_dotenv()
@@ -26,14 +30,40 @@ API_HASH = os.environ["TELEGRAM_API_HASH"]
 
 TOTAL_GROUPS = 100
 
+# Group profile photo — downloaded once, reused for all groups
+PHOTO_URL  = "https://ui-avatars.com/api/?name=G&size=512&background=1a1f36&color=00d4ff&bold=true&format=png"
+PHOTO_FILE = "group_photo.png"
+
 # Message sent in every newly created group
 WELCOME_MESSAGE = (
     "👋 Hello! This group is active and ready.\n"
-    "Join us and stay tuned for updates!"
+    "Stay tuned for updates and giveaways!"
 )
 
 
+async def set_photo(client, channel, uploaded_photo):
+    """Set the profile photo for a channel/supergroup."""
+    try:
+        await client(EditPhotoRequest(
+            channel=channel,
+            photo=InputChatUploadedPhoto(uploaded_photo)
+        ))
+    except Exception as e:
+        print(f"  ⚠️  Photo set failed: {e}")
+
+
 async def main():
+    # ── Download group photo once ─────────────────────────────────────────
+    print("📥 Downloading group profile photo …")
+    try:
+        urllib.request.urlretrieve(PHOTO_URL, PHOTO_FILE)
+        print(f"  ✅ Photo ready: {PHOTO_FILE}")
+    except Exception as e:
+        print(f"  ⚠️  Could not download photo: {e}")
+        PHOTO_FILE_READY = False
+    else:
+        PHOTO_FILE_READY = True
+
     client = TelegramClient("userbot_session", API_ID, API_HASH)
     await client.connect()
 
@@ -45,6 +75,15 @@ async def main():
     print(f"✅ Logged in as: {me.first_name} (@{me.username})")
     print(f"📦 Creating {TOTAL_GROUPS} supergroups …\n")
 
+    # Upload the photo file once (reused for every group)
+    uploaded_photo = None
+    if PHOTO_FILE_READY:
+        try:
+            uploaded_photo = await client.upload_file(PHOTO_FILE)
+            print("  📤 Photo uploaded to Telegram\n")
+        except Exception as e:
+            print(f"  ⚠️  Photo upload failed: {e}\n")
+
     created = []
     failed  = []
     n = 0
@@ -52,53 +91,63 @@ async def main():
     while n < TOTAL_GROUPS:
         attempt_num = n + 1
         try:
-            # ── 1. Create supergroup (megagroup=True) ──────────────────────
+            # 1. Create supergroup
             result = await client(CreateChannelRequest(
-                title=f"Group {attempt_num}",  # temp title, will rename below
+                title=f"Group {attempt_num}",
                 about="",
-                megagroup=True,                # supergroup, not a channel
+                megagroup=True,
             ))
             channel  = result.chats[0]
             group_id = channel.id
 
-            # ── 2. Rename to its own Telegram ID ──────────────────────────
+            await asyncio.sleep(2)
+
+            # 2. Rename to its own Telegram ID
             await client(EditTitleRequest(channel=channel, title=str(group_id)))
 
-            # ── 3. Make chat history visible to new members ───────────────
-            #    enabled=False  → history IS visible (toggle "hidden" off)
-            #    Silently skip if already in the correct state
+            await asyncio.sleep(2)
+
+            # 3. Set profile photo
+            if uploaded_photo:
+                await set_photo(client, channel, uploaded_photo)
+                await asyncio.sleep(2)
+
+            # 4. Make chat history visible to new members
             try:
                 await client(TogglePreHistoryHiddenRequest(channel=channel, enabled=False))
             except ChatNotModifiedError:
-                pass  # already visible — no action needed
+                pass
+            await asyncio.sleep(1)
 
-            # ── 4. Send welcome message ───────────────────────────────────
+            # 5. Send welcome message
             await client.send_message(channel, WELCOME_MESSAGE)
 
             n += 1
             created.append(group_id)
-            print(f"  [{n:>3}/{TOTAL_GROUPS}] ✅ Created supergroup ID={group_id}")
+            print(f"  [{n:>3}/{TOTAL_GROUPS}] ✅ ID={group_id} — photo set, message sent")
 
-            # Safe random delay between each group
-            delay = random.uniform(4, 8)
+            # Longer delay between groups to avoid flood bans (15–25s)
+            delay = random.uniform(15, 25)
+            print(f"           ⏱  Next in {delay:.0f}s …")
             await asyncio.sleep(delay)
 
         except FloodWaitError as e:
-            print(f"  ⏳ Telegram flood wait: sleeping {e.seconds}s …")
-            await asyncio.sleep(e.seconds + 2)
-            # Do NOT increment n — retry same group
+            print(f"  ⏳ Flood wait: sleeping {e.seconds}s …")
+            await asyncio.sleep(e.seconds + 5)
 
         except Exception as e:
             print(f"  ❌ Error on group {attempt_num}: {e}")
             failed.append(attempt_num)
-            n += 1  # skip and move on
-            await asyncio.sleep(5)
+            n += 1
+            await asyncio.sleep(10)
+
+    # Cleanup
+    if PHOTO_FILE_READY and os.path.exists(PHOTO_FILE):
+        os.remove(PHOTO_FILE)
 
     print(f"\n{'='*50}")
     print(f"✅ Created:  {len(created)}")
     print(f"❌ Failed:   {len(failed)}")
-    if failed:
-        print(f"   Failed at: {failed}")
     print(f"{'='*50}")
     await client.disconnect()
 
