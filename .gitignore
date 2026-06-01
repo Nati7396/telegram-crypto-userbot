@@ -1,0 +1,27 @@
+# ─── Never commit these ──────────────────────────────────────────────────────
+
+# Real credentials (use .env.template instead)
+.env
+
+# Telegram session file (contains your login — treat like a password)
+*.session
+*.session-journal
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
