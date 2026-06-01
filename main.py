@@ -1,18 +1,23 @@
 """
-main.py – Telegram Userbot (Telethon)
-──────────────────────────────────────
-Monitors a list of Telegram groups/channels for crypto giveaways & airdrops,
-auto-participates, and notifies you (Saved Messages) + the console.
+main.py – Telegram Userbot (Telethon) — @cctip_bot / Cwallet grabber
+──────────────────────────────────────────────────────────────────────
+Strategy:
+  1. Scan ALL groups you are already in and find the ones where @cctip_bot
+     is a member — those are the real giveaway groups.
+  2. Also watch a seed list of known @cctip_bot / Cwallet groups and join them.
+  3. Listen ONLY for messages FROM @cctip_bot (uid 1559503444) or @Cwallet_com_Bot
+     that announce /airdrop /rain /draw /giveaway /lucky.
+  4. Auto-grab: click "Grab a Share" / "Grab" buttons, reply with the grab
+     keyword, send commands to @cctip_bot in that group.
+  5. Notify Saved Messages + console every time something is grabbed.
 
 Requirements: telethon, flask, python-dotenv
-Run:          python main.py
 """
 
 import asyncio
 import os
 import random
 import re
-import time
 from datetime import datetime
 
 from dotenv import load_dotenv
@@ -21,136 +26,124 @@ from telethon.errors import (
     ChatWriteForbiddenError,
     FloodWaitError,
     UserAlreadyParticipantError,
+    ChannelPrivateError,
 )
-from telethon.tl.functions.channels import JoinChannelRequest
-from telethon.tl.functions.messages import ImportChatInviteRequest
-from telethon.tl.types import KeyboardButtonCallback
+from telethon.tl.functions.channels import JoinChannelRequest, GetParticipantRequest
+from telethon.tl.types import ChannelParticipant
 
 from keep_alive import keep_alive
 
-# ─── Load environment variables from .env ────────────────────────────────────
+# ─── Env ─────────────────────────────────────────────────────────────────────
 load_dotenv()
+API_ID   = int(os.environ["TELEGRAM_API_ID"])
+API_HASH = os.environ["TELEGRAM_API_HASH"]
+PHONE    = os.environ["TELEGRAM_PHONE"]
 
-API_ID      = int(os.environ["TELEGRAM_API_ID"])
-API_HASH    = os.environ["TELEGRAM_API_HASH"]
-PHONE       = os.environ["TELEGRAM_PHONE"]
-
-# ─── Telethon session (saved to disk so login is only needed once) ────────────
 SESSION_NAME = "userbot_session"
 
-# ─── Keywords that signal a giveaway / airdrop is happening ──────────────────
-GIVEAWAY_KEYWORDS = [
-    "airdrop",
-    "giveaway",
-    r"/rain",
-    r"/airdrop",
-    r"/tip",
-    "grab",
-    r"/grab",
-    "claim",
-    r"/claim",
-    "free",
-    "@cctip_bot",
-    "rain",
-    "/giveaway",
-    "/draw",
-    "/lucky",
-    "luckybox",
-    "token drop",
-    "crypto drop",
-    "participate",
-    "join to win",
-    "free tokens",
-    "free coins",
-]
+# ─── @cctip_bot / @Cwallet_com_Bot identifiers ───────────────────────────────
+# These are the ONLY bots whose messages we act on.
+CCTIP_USERNAMES = {"cctip_bot", "cwallet_com_bot", "cctipcoin_bot"}
 
-# Compile into one fast regex (case-insensitive)
-KEYWORD_PATTERN = re.compile(
-    "|".join(re.escape(k) for k in GIVEAWAY_KEYWORDS),
+# ─── Giveaway command keywords (must appear in the bot's message) ─────────────
+GIVEAWAY_PATTERN = re.compile(
+    r"/airdrop|/rain|/draw|/giveaway|/lucky|/tip\b|grab a share|airdrop started|rain started|giveaway started",
     re.IGNORECASE,
 )
 
-# ─── Buttons we try to click when they appear ────────────────────────────────
+# ─── Buttons we click ────────────────────────────────────────────────────────
 GRAB_BUTTON_LABELS = {
-    "grab", "claim", "join", "participate", "get", "grab a share",
-    "join airdrop", "claim reward", "take", "get tokens",
+    "grab", "grab a share", "claim", "join", "participate",
+    "get", "claim reward", "take", "join airdrop",
 }
 
-# ─── Commands sent to @cctip_bot after detecting a giveaway ──────────────────
-CCTIP_COMMANDS = ["/grab", "/claim"]
+# ─── Keyword to type in chat when no button is found ─────────────────────────
+GRAB_KEYWORD = "grab"
 
-# ─── 20+ popular @cctip_bot Telegram groups to monitor from the start ────────
-MONITORED_GROUPS = [
-    # Username-based (public groups/channels)
-    "cctip_announcements",
-    "CryptoComOfficial",
-    "BinanceEnglish",
-    "CoinMarketCapGlobal",
-    "KuCoinGlobalCommunity",
-    "AirdropAlertCom",
-    "AirdropBob",
-    "AirdropHunter",
-    "CryptoAirdropIntel",
-    "FreeAirdropNews",
-    "AirdropDetective",
-    "CoinHuntWorld",
-    "CryptoGiveawayHub",
-    "TronAirdrops",
-    "BSCAirdrops",
-    "SolanaAirdrops",
-    "PolygonAirdropHub",
-    "EthereumAirdrops",
-    "CryptoRainGroup",
-    "CryptoTipBot",
-    "AirdropKingdom",
-    "CryptoFreebies",
-    "AirdropHuntersClub",
-    "GrabCryptoNow",
+# ─── Seed list of known real @cctip_bot / Cwallet groups to join at start ────
+# These are actual Cwallet / CCTip community groups.
+SEED_GROUPS = [
+    "Cwallet_official",       # Cwallet official community
+    "cctip_official",         # CCTip official
+    "cwallet_announcements",  # Announcements
+    "CwalletGlobal",
     "CCTipCommunity",
+    "cctip_rain",
+    "cwallet_rain",
+    "CryptoRainOfficial",
+    "RainCrypto",
+    "CCTipAirdrop",
+    "CwalletAirdrop",
+    "TipBotCrypto",
+    "CryptoTipRain",
 ]
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 def log(msg: str):
-    """Print a timestamped message to the console."""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{ts}] {msg}")
+    print(f"[{ts}] {msg}", flush=True)
 
 
-async def safe_delay(min_s: float = 2.0, max_s: float = 5.0):
-    """Random delay to avoid Telegram flood bans."""
-    delay = random.uniform(min_s, max_s)
-    log(f"  ⏱  Waiting {delay:.1f}s before next action …")
-    await asyncio.sleep(delay)
+async def safe_delay(min_s=2.0, max_s=5.0):
+    d = random.uniform(min_s, max_s)
+    await asyncio.sleep(d)
 
 
-async def notify_self(client: TelegramClient, text: str):
-    """Send a notification to your own Saved Messages."""
+async def notify_self(client, text):
     try:
         await client.send_message("me", text)
-    except Exception as exc:
-        log(f"  [notify_self] Could not send self-message: {exc}")
+    except Exception as e:
+        log(f"  [notify] {e}")
 
 
-async def join_group(client: TelegramClient, entity):
-    """Try to join a group/channel the account is not yet in."""
+async def join_group(client, entity):
     try:
         await client(JoinChannelRequest(entity))
-        log(f"  ✅ Joined group: {getattr(entity, 'title', entity)}")
+        log(f"  ✅ Joined: {getattr(entity, 'title', entity)}")
     except UserAlreadyParticipantError:
-        pass  # Already a member – fine
+        pass
     except FloodWaitError as e:
-        log(f"  ⚠️  Flood wait: sleeping {e.seconds}s")
+        log(f"  ⏳ Flood wait {e.seconds}s")
         await asyncio.sleep(e.seconds)
-    except Exception as exc:
-        log(f"  ❌ Could not join group: {exc}")
+    except Exception as e:
+        log(f"  ⚠️  Could not join: {e}")
 
 
-async def try_click_buttons(client: TelegramClient, message):
-    """Click any inline buttons that match our grab labels."""
+async def cctip_bot_in_group(client, group) -> bool:
+    """Return True if @cctip_bot or @Cwallet_com_Bot is a member of this group."""
+    for uname in CCTIP_USERNAMES:
+        try:
+            await client(GetParticipantRequest(group, uname))
+            return True
+        except Exception:
+            continue
+    return False
+
+
+async def scan_my_groups(client):
+    """
+    Scan all dialogs the account is in.
+    Return list of (entity, title) where @cctip_bot is a member.
+    """
+    found = []
+    log("🔍 Scanning your groups for @cctip_bot presence …")
+    async for dialog in client.iter_dialogs():
+        if not dialog.is_group and not dialog.is_channel:
+            continue
+        try:
+            if await cctip_bot_in_group(client, dialog.entity):
+                found.append(dialog.entity)
+                log(f"  ✅ @cctip_bot found in: {dialog.title}")
+                await asyncio.sleep(0.5)
+        except Exception:
+            continue
+    return found
+
+
+async def try_click_buttons(message) -> bool:
     if not message.reply_markup:
         return False
-
     clicked = False
     rows = getattr(message.reply_markup, "rows", [])
     for row in rows:
@@ -159,124 +152,134 @@ async def try_click_buttons(client: TelegramClient, message):
             if label in GRAB_BUTTON_LABELS:
                 try:
                     await message.click(data=button.data)
-                    log(f"  🖱️  Clicked button: '{button.text}'")
+                    log(f"  🖱️  Clicked: '{button.text}'")
                     clicked = True
-                    await safe_delay()
-                except Exception as exc:
-                    log(f"  ⚠️  Button click failed: {exc}")
+                    await safe_delay(1, 2)
+                except Exception as e:
+                    log(f"  ⚠️  Click failed: {e}")
     return clicked
 
 
-async def try_send_grab_commands(
-    client: TelegramClient, chat, message, keyword_found: str
-):
+async def grab_giveaway(client, chat, message, giveaway_type: str):
     """
-    Send /grab or /claim to @cctip_bot (and reply to the giveaway message).
+    Full grab sequence for a detected @cctip_bot giveaway.
     """
-    # 1. Reply to the original giveaway message with "grab"
-    try:
-        await message.reply("grab")
-        log("  📩 Replied 'grab' to giveaway message")
-        await safe_delay()
-    except ChatWriteForbiddenError:
-        log("  ⚠️  Write access forbidden – cannot reply in this chat")
-    except FloodWaitError as e:
-        log(f"  ⚠️  Flood wait: sleeping {e.seconds}s")
-        await asyncio.sleep(e.seconds)
-    except Exception as exc:
-        log(f"  ⚠️  Reply failed: {exc}")
+    chat_title = getattr(chat, "title", None) or str(chat.id)
+    log(f"🎯 GRAB triggered in [{chat_title}] — type: {giveaway_type}")
 
-    # 2. Send commands directly to @cctip_bot in the group
-    for cmd in CCTIP_COMMANDS:
+    await safe_delay(1, 3)
+
+    # 1. Click inline button (Grab a Share / Grab / Claim)
+    clicked = await try_click_buttons(message)
+
+    await safe_delay(1, 2)
+
+    # 2. Reply with grab keyword to the bot's message
+    try:
+        await message.reply(GRAB_KEYWORD)
+        log(f"  📩 Replied '{GRAB_KEYWORD}'")
+    except ChatWriteForbiddenError:
+        log("  ⚠️  Can't write in this group")
+    except FloodWaitError as e:
+        await asyncio.sleep(e.seconds)
+    except Exception as e:
+        log(f"  ⚠️  Reply failed: {e}")
+
+    await safe_delay(1, 2)
+
+    # 3. Send grab/claim commands to the group (cctip_bot reads these)
+    for cmd in ["/grab", "/claim"]:
         try:
             await client.send_message(chat, cmd)
-            log(f"  📤 Sent '{cmd}' to the group")
-            await safe_delay()
-        except Exception as exc:
-            log(f"  ⚠️  Could not send '{cmd}': {exc}")
+            log(f"  📤 Sent '{cmd}' to group")
+            await safe_delay(1, 2)
+        except Exception as e:
+            log(f"  ⚠️  {cmd} failed: {e}")
+
+    # 4. Notify yourself
+    msg_text = getattr(message, "message", "") or ""
+    await notify_self(
+        client,
+        f"🪙 Grabbed!\n"
+        f"Group: {chat_title}\n"
+        f"Type: {giveaway_type}\n"
+        f"Button clicked: {'Yes' if clicked else 'No'}\n"
+        f"Message: {msg_text[:200]}\n"
+        f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+    log("🔔 Notification sent to Saved Messages")
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
 
 async def main():
-    log("🚀 Telegram Userbot starting …")
+    log("🚀 @cctip_bot Grabber starting …")
 
     client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+    await client.connect()
 
-    # ── Login (interactive on first run; uses saved session thereafter) ────
-    await client.start(phone=PHONE)
+    if not await client.is_user_authorized():
+        log("❌ Not logged in — run: python do_login.py --request")
+        return
+
     me = await client.get_me()
-    log(f"✅ Logged in as: {me.first_name} (@{me.username}) | id={me.id}")
+    log(f"✅ Logged in as: {me.first_name} (@{me.username})")
 
-    # ── Join all monitored groups (best-effort; errors are swallowed) ──────
-    log("📋 Joining monitored groups …")
-    for group in MONITORED_GROUPS:
+    # ── Step 1: Try to join seed groups (best-effort, many may not exist) ──
+    log("📋 Checking seed @cctip_bot groups …")
+    for g in SEED_GROUPS:
         try:
-            entity = await client.get_entity(group)
+            entity = await client.get_entity(g)
             await join_group(client, entity)
-            await safe_delay(1.0, 2.5)
-        except Exception as exc:
-            log(f"  ⚠️  Could not resolve '{group}': {exc}")
+            await safe_delay(1, 2)
+        except Exception:
+            pass  # Group doesn't exist or private — skip silently
 
-    # ─── Event handler: fires on every new message in ANY dialog ──────────
+    # ── Step 2: Scan existing groups for @cctip_bot presence ──────────────
+    cctip_groups = await scan_my_groups(client)
+    log(f"📊 Found {len(cctip_groups)} group(s) with @cctip_bot active")
+
+    # ── Step 3: Event handler — only fire on messages FROM @cctip_bot ──────
     @client.on(events.NewMessage())
     async def handler(event):
-        message = event.message
-        text    = message.message or ""
+        msg = event.message
+        text = msg.message or ""
 
-        # Skip empty messages and messages from ourselves
-        if not text or event.out:
+        # Skip our own outgoing messages
+        if event.out:
             return
 
-        # Only react if a giveaway keyword is present
-        match = KEYWORD_PATTERN.search(text)
+        # Only care about messages from @cctip_bot / @Cwallet_com_Bot
+        try:
+            sender = await event.get_sender()
+        except Exception:
+            return
+
+        if sender is None:
+            return
+
+        sender_username = (getattr(sender, "username", "") or "").lower()
+        if sender_username not in CCTIP_USERNAMES:
+            return
+
+        # Only act if this looks like a giveaway announcement
+        match = GIVEAWAY_PATTERN.search(text)
         if not match:
             return
 
-        keyword_found = match.group(0)
+        giveaway_type = match.group(0)
 
-        # Resolve the chat entity
         try:
             chat = await event.get_chat()
         except Exception:
             return
 
-        chat_title = getattr(chat, "title", None) or getattr(chat, "username", "Unknown")
-        log(f"🎯 Giveaway detected in [{chat_title}] | keyword='{keyword_found}'")
-        log(f"   Message: {text[:120].strip()}")
+        await grab_giveaway(client, chat, msg, giveaway_type)
 
-        # If we're not a member, join first
-        try:
-            await join_group(client, chat)
-        except Exception:
-            pass
-
-        await safe_delay()
-
-        # 1. Try inline buttons first
-        clicked = await try_click_buttons(client, message)
-
-        # 2. Also send grab commands regardless
-        await try_send_grab_commands(client, chat, message, keyword_found)
-
-        # 3. Notify yourself
-        notification = (
-            f"🪙 Giveaway found!\n"
-            f"Group: {chat_title}\n"
-            f"Keyword: {keyword_found}\n"
-            f"Message: {text[:200]}\n"
-            f"Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-            f"Button clicked: {'Yes' if clicked else 'No'}"
-        )
-        await notify_self(client, notification)
-        log(f"🔔 Notification sent to Saved Messages")
-
-    log("👂 Listening for giveaways … (press Ctrl+C to stop)")
+    log(f"👂 Watching for @cctip_bot giveaways in ALL your groups … (running 24/7)")
     await client.run_until_disconnected()
 
 
 if __name__ == "__main__":
-    # Start the keep-alive Flask server in a background thread
     keep_alive()
-    # Run the userbot
     asyncio.run(main())
