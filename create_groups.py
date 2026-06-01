@@ -142,10 +142,8 @@ async def main():
             created.append(group_id)
             print(f"  [{n:>3}/{TOTAL_GROUPS}] ✅ ID={group_id} — photo set, message sent")
 
-            # Longer delay between groups to avoid flood bans (15–25s)
-            delay = random.uniform(15, 25)
-            print(f"           ⏱  Next in {delay:.0f}s …")
-            await asyncio.sleep(delay)
+            # Delay between groups (5s)
+            await asyncio.sleep(5)
 
         except FloodWaitError as e:
             print(f"  ⏳ Flood wait: sleeping {e.seconds}s …")
