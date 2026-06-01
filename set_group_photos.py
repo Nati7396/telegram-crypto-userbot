@@ -10,7 +10,8 @@ that were created before photo support was added.
 
 import asyncio
 import os
-import urllib.request
+import struct
+import zlib
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.tl.functions.channels import EditPhotoRequest
@@ -21,13 +22,27 @@ load_dotenv()
 API_ID   = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
 
-PHOTO_URL  = "https://ui-avatars.com/api/?name=G&size=512&background=1a1f36&color=00d4ff&bold=true&format=png"
 PHOTO_FILE = "group_photo.png"
 
 
+def make_png(width: int, height: int, r: int, g: int, b: int) -> bytes:
+    """Generate a solid-color PNG using only built-in Python modules."""
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    row       = bytes([0] + [r, g, b] * width)
+    idat_data = zlib.compress(row * height)
+    return (b"\x89PNG\r\n\x1a\n"
+            + chunk(b"IHDR", ihdr_data)
+            + chunk(b"IDAT", idat_data)
+            + chunk(b"IEND", b""))
+
+
 async def main():
-    print("📥 Downloading group profile photo …")
-    urllib.request.urlretrieve(PHOTO_URL, PHOTO_FILE)
+    print("🎨 Generating group profile photo …")
+    with open(PHOTO_FILE, "wb") as f:
+        f.write(make_png(512, 512, 26, 31, 54))
     print(f"  ✅ Photo ready: {PHOTO_FILE}\n")
 
     client = TelegramClient("userbot_session", API_ID, API_HASH)
