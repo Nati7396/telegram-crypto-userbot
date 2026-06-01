@@ -12,7 +12,8 @@ Creates 100 Telegram supergroups:
 import asyncio
 import os
 import random
-import urllib.request
+import struct
+import zlib
 from dotenv import load_dotenv
 from telethon import TelegramClient
 from telethon.tl.functions.channels import (
@@ -29,16 +30,31 @@ API_ID   = int(os.environ["TELEGRAM_API_ID"])
 API_HASH = os.environ["TELEGRAM_API_HASH"]
 
 TOTAL_GROUPS = 100
-
-# Group profile photo — downloaded once, reused for all groups
-PHOTO_URL  = "https://ui-avatars.com/api/?name=G&size=512&background=1a1f36&color=00d4ff&bold=true&format=png"
-PHOTO_FILE = "group_photo.png"
+PHOTO_FILE   = "group_photo.png"
 
 # Message sent in every newly created group
 WELCOME_MESSAGE = (
     "👋 Hello! This group is active and ready.\n"
     "Stay tuned for updates and giveaways!"
 )
+
+
+def make_png(width: int, height: int, r: int, g: int, b: int) -> bytes:
+    """Generate a solid-color PNG using only built-in Python modules."""
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        return (struct.pack(">I", len(data)) + tag + data +
+                struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+
+    ihdr_data = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    row       = bytes([0] + [r, g, b] * width)
+    idat_data = zlib.compress(row * height)
+
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr_data)
+        + chunk(b"IDAT", idat_data)
+        + chunk(b"IEND", b"")
+    )
 
 
 async def set_photo(client, channel, uploaded_photo):
@@ -53,16 +69,16 @@ async def set_photo(client, channel, uploaded_photo):
 
 
 async def main():
-    # ── Download group photo once ─────────────────────────────────────────
-    print("📥 Downloading group profile photo …")
+    # ── Generate group photo (dark navy blue, 512×512) ────────────────────
+    print("🎨 Generating group profile photo …")
     try:
-        urllib.request.urlretrieve(PHOTO_URL, PHOTO_FILE)
+        with open(PHOTO_FILE, "wb") as f:
+            f.write(make_png(512, 512, 26, 31, 54))   # dark navy #1a1f36
         print(f"  ✅ Photo ready: {PHOTO_FILE}")
-    except Exception as e:
-        print(f"  ⚠️  Could not download photo: {e}")
-        PHOTO_FILE_READY = False
-    else:
         PHOTO_FILE_READY = True
+    except Exception as e:
+        print(f"  ⚠️  Could not generate photo: {e}")
+        PHOTO_FILE_READY = False
 
     client = TelegramClient("userbot_session", API_ID, API_HASH)
     await client.connect()
