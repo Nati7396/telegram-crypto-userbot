@@ -19,8 +19,8 @@ def home():
 
 
 def run():
-    """Run Flask on port 8080 (Replit exposes this automatically)."""
-    app.run(host="0.0.0.0", port=8080)
+    """Run Flask on port 8099 (keep-alive ping target)."""
+    app.run(host="0.0.0.0", port=8099)
 
 
 def keep_alive():
